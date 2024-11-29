@@ -32,6 +32,7 @@ local pwmIntervalFaders = {}
 local momentaryKeys = {}
 
 g = grid.connect()
+m = midi.connect(1)
 
 for i = 1, 12 do
    mixer["channel_"..i.."_amp"] = Fader.new(i, g, 5, 1)
@@ -336,6 +337,22 @@ function redraw()
    --    engine.dipModulatorFrequency(i-12, momentaryKeys[i][8])
    -- end
 
+   -- send program changes to microcosm
+   -- TODO cleanup: move execution of actions up, only redrawing here
+   g:led(16, 2, momentaryKeys[16][2] * 15)
+   if momentaryKeys[16][2] == 1 then
+      -- Interrupt A
+      print("trigger Interrupt A")
+      m:program_change(5, 1)
+   end
+
+   g:led(16, 3, momentaryKeys[16][3] * 15)
+   if momentaryKeys[16][3] == 1 then
+      -- Interrupt D
+      print("trigger Interrupt D")
+      m:program_change(8, 1)
+   end
+   
    -- trigger delay envelope
    for i = 1,12 do
       g:led(i, 2, momentaryKeys[i][2] * 15)
