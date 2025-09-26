@@ -13,12 +13,16 @@ function BIFURCATION.add_params()
   local syncSawVoices = {1,2,3,4}
   local pwmVoices = {1,2,3,4}
   local modulators = {1,2,3,4}
+  local grainVoices = {1,2,3,4}
   local modulatorFrequencies = {3.55, 5.33, 8, 12, 18, 27, 40.5}
   local klankDecayLowerLimits = {0.0000001, 0.000001, 0.0001, 0.001, 0.01, 0.1}
   local klankGains = {0, 0.01, 0.1, 0.5, 0.8, 0.9}
   local rDevs = {-0.05, -0.02, 0, 0.02, 0.05}
   local pwmBaseFreqs = {50, 100, 200, 300, 500}
   local pwmIntervals = {1.111, 1.2, 1.25, 1.333, 1.5, 1.75}
+  local grainRates = {-1.0, -0.5, -0.2, 0.2, 0.5, 1.0, 2.0}
+  local grainDurations = {0.05, 0.1, 0.2, 0.5, 1.0, 2.0}
+  -- local grainCenterPos
 
   params:add_separator("Mixer")
   for i = 1,#channels do
@@ -32,6 +36,14 @@ function BIFURCATION.add_params()
       end
     )
   end
+  
+  params:add_option("master_volume", "Master Volume", levels, 1)
+  params:set_action("master_volume",
+    function(idx)
+      local db = levels[idx]
+      engine.masterVolume(db)
+    end
+  )
   
   params:add_separator("Logistic")
 
@@ -91,7 +103,7 @@ function BIFURCATION.add_params()
   params:add_control(
     "pwm_env_atk",
     "PWM Env Atk",
-    ControlSpec.new(0.01, 1, 'exp', 0, 0.01),
+    ControlSpec.new(0.01, 1.0, 'exp', 0, 0.01),
     function(param) return (round_form(param:get(),0.01," s")) end
   )
   params:set_action("pwm_env_atk",
@@ -103,7 +115,7 @@ function BIFURCATION.add_params()
   params:add_control(
     "pwm_env_sus",
     "PWM Env Sus",
-    ControlSpec.new(0, 1, 'lin', 0, 0),
+    ControlSpec.new(0, 1.0, 'lin', 0, 0),
     function(param) return (round_form(param:get(),0.01," s")) end
   )
   params:set_action("pwm_env_sus",
@@ -115,7 +127,7 @@ function BIFURCATION.add_params()
   params:add_control(
     "pwm_env_rel",
     "PWM Env Rel",
-    ControlSpec.new(0.01, 1, 'exp', 0, 0.1),
+    ControlSpec.new(0.01, 1.0, 'exp', 0, 0.1),
     function(param) return (round_form(param:get(),0.01," s")) end
   )
   params:set_action("pwm_env_rel",
@@ -142,62 +154,32 @@ function BIFURCATION.add_params()
      )
   end
   
-  -- for i = 1,#voices do
-  --   params:add_group("voice ["..voices[i].."]",#specs) -- add a PARAMS group, eg. 'voice [all]'
-  --   for j = 1,#specs do
-  --     local p = specs[j]
-  --     if p.type == 'control' then
-  --       params:add_control(
-  --         voices[i].."_"..p.id,
-  --         p.name,
-  --         ControlSpec.new(p.min, p.max, p.warp, 0, p.default),
-  --         p.formatter
-  --       )
-  --     elseif p.type == 'number' then
-  --       params:add_number(
-  --         voices[i].."_"..p.id,
-  --         p.name,
-  --         p.min,
-  --         p.max,
-  --         p.default,
-  --         p.formatter
-  --       )
-  --     elseif p.type == "option" then
-  --       params:add_option(
-  --         voices[i].."_"..p.id,
-  --         p.name,
-  --         p.options,
-  --         p.default
-  --       )
-  --     elseif p.type == 'separator' then
-  --       params:add_separator(p.name)
-  --     end
+  params:add_separator("Grains")
+  for i = 1,#grainVoices do
+     params:add_option("grain_"..grainVoices[i].."_rate", "Grain ["..grainVoices[i].."] rate", grainRates, 6)
+     params:set_action("grain_"..grainVoices[i].."_rate", 
+                       function(idx)
+                          local rate = grainRates[idx]
+                          engine.setGrainRate(i, rate)
+                       end
+     )
+     
+     params:add_option("grain_"..grainVoices[i].."_dur", "Grain ["..grainVoices[i].."] dur", grainDurations, 3)
+     params:set_action("grain_"..grainVoices[i].."_dur", 
+                       function(idx)
+                          local dur = grainDurations[idx]
+                          engine.setGrainDuration(i, dur)
+                       end
+     )
+  end
   
-  --     -- if the parameter type isn't a separator, then we want to assign it an action to control the engine:
-  --     if p.type ~= 'separator' then
-  --       params:set_action(voices[i].."_"..p.id, function(x)
-  --         -- use the line's 'id' as the engine command, eg. engine.amp or engine.c+utoff_env,
-  --         --  and send the voice and the value:
-
-  --         -- if we are dealing with an `option`, let's compensate for the 1-based index
-  --         if p.type == "option" then
-  --           x = x - 1
-  --         end
-
-  --         engine[p.id](voices[i],x) -- 
-  --         if voices[i] == "all" then -- it's nice to echo 'all' changes back to the parameters themselves
-  --           -- since 'all' voice corresponds to the first entry in 'voices' table,
-  --           --   we iterate the other parameter groups as 2 through 9:
-  --           for other_voices = 2,11 do
-  --             -- send value changes silently, since 'all' changes all values on SuperCollider's side:
-  --             params:set(voices[other_voices].."_"..p.id, x, true)
-  --           end
-  --         end
-  --       end)
-  -- end
+  params:add_separator("MIDI")
+  params:add_number("midi_channel", "MIDI channel", 1, 16, 1) 
   
-  -- end
-  -- end
+  params:add_number("midi_program_change", "MIDI PC", 0, 127, 0)
+  params:set_action("midi_program_change", function(pc)
+      m:program_change(pc, params:get("midi_channel"))
+    end)
   
   params:bang()
 end

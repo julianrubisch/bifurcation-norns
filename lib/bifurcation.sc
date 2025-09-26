@@ -14,12 +14,18 @@ Bifurcation {
 	var modulatedPulses;
 	var <pulsesGroup;
 	
+	var grains;
+	var <grainsGroup;
+	
+	var <fxGroup;
+	
 	var logisticOutBusses;
 	var lagBusses;
 	var deltaBusses;
 	var integratedDeltaBusses;
 	var mixerInBusses;
 	var delayBusses;
+	var <ampBusses;
 
 	var klankDecaysLower;
 	var klankGains;
@@ -60,7 +66,7 @@ Bifurcation {
 
 					sig = sig * env;
 
-					sig = sig * \amp.kr(0.5);
+					sig = sig * \amp.kr(0.5) * 0.67;
 
 					Out.ar(\out.kr(0), sig);
 				}).add;
@@ -78,9 +84,32 @@ Bifurcation {
 					sig = RLPF.ar(sig, ((1 - env) * depth) + (8000 - depth), 0.05);
 					// sig = RLPF.ar(sig, 8000, 0.05);
 
-					// sig = sig * 0.67;
+					sig = sig * 0.67;
 
 					Out.ar(\out.kr(0), sig);
+				}).add;
+				
+				SynthDef.new(\grains, {
+				  var sig;
+				  
+				  sig = TGrains.ar(
+            numChannels: 2,
+            trigger: Dust.kr(\tRate.kr(40)),
+            bufnum: \buf.kr(0),
+            rate: \rate.kr(1),
+            // centerPos: \pos.kr(0.5), // in seconds (!)
+            dur: Lag.kr(\dur.kr(0.2), 1), // in secs
+            //dur: LFSaw.kr(\durRate.kr(0.2), mul: 0.3, add: 0.4),
+            //dur: In.kr(\dur.kr(0)),
+            pan: LFNoise1.kr(0.5, mul: 0.5, add: 0.5),
+            //pan: In.kr(\pan.kr(0)),
+            amp: 1, // default is 0.1 (!),
+            interp: 2
+          );
+
+          sig = sig * \amp.kr(1.0);
+          
+          Out.ar(\out.kr(0), sig);
 				}).add;
 
 				SynthDef.new(\lagPanner, {
@@ -141,59 +170,43 @@ Bifurcation {
 		}
 	}
 
-	*new {
-		^super.new.init;
+	*new { |server, baseSamplePath|
+		^super.new.init(server, baseSamplePath);
 	}
 
-	init {
-		var s = Server.default;
+	init { |server, baseSamplePath|
+		var s = server;
+		
+		var boomwhackerCBuf = Buffer.read(s, baseSamplePath ++ "bifurcation_boomwhacker_C.wav");
+		var plasticBellShortBuf = Buffer.read(s, baseSamplePath ++ "bifurcation_plastic_bell_short.wav");
+		var wahTubeSharpBuf = Buffer.read(s, baseSamplePath ++ "bifurcation_wah_tube_sharp.wav");
 
 		voiceGroup = Group.new(s);
-		globalParams = Dictionary[
-			\fb -> 0,
-			\amp -> 0.1,
-			\attack -> 0.5,
-			\pan -> 0,
-			\panFreq -> 1,
-			\panAmp -> 0,
-			\fbFreq -> 1,
-			\fbAmp -> 0,
-			\filterFreq -> 10000,
-			\filterQ -> 1,
-			\sustain -> 1,
-			\release -> 1,
-			\mode -> 0 // 0 == static, 1 == dust, 2 == grid
-		];
-
-		singleVoices = Dictionary.new;
-		voiceParams = Dictionary.new;
-
-		voiceKeys.do({ |voiceKey|
-			singleVoices[voiceKey] = Group.new(voiceGroup);
-			voiceParams[voiceKey] = Dictionary.newFrom(globalParams);
-		});
-
-		// rework above
 		logisticGroup = Group.new(s);
 		pulsesGroup = Group.new(s);
+		grainsGroup = Group.new(s);
+		fxGroup = Group.new(s);
+		
 
 		modulator_count = 4;
 
 		logisticModulators = [nil, nil, nil, nil];
 		modulatedPulses = [nil, nil, nil, nil];
+		grains = [nil, nil, nil, nil];
 		delays = Array.fill(modulator_count * 3, nil);
 		klankDecaysLower = Array.fill(4, 0.0000001);
 		klankGains = [0, 0, 0, 0];
 		syncSawAtk = 0.01;
 
-
+    // busses
 		logisticOutBusses = modulator_count.collect { Bus.control(s, 1) };
 		lagBusses =  modulator_count.collect { Bus.control(s, 1) };
 		deltaBusses = modulator_count.collect { Bus.control(s, 1) };
 		integratedDeltaBusses = modulator_count.collect { Bus.control(s, 1) };
 		delayBusses = (3 * modulator_count).collect { Bus.audio(s, 2) };
 		mixerInBusses = (3 * modulator_count).collect { Bus.audio(s, 2) };
-
+		ampBusses = Array.fill(14, { arg i; Bus.control(s); });
+    
 		[3.1, 3.9, 3.8, 3.4].collect { |r, index|
 			logisticModulators[index] = Synth(\logistic, [\r, r, \out, logisticOutBusses[index]], logisticGroup);
 		};
@@ -209,24 +222,39 @@ Bifurcation {
 			
 			modulatedPulses[index] = Synth(\modulatedPulse, [\out, delayBusses[index + 4], \width, deltaBusses[index]]);
 		};
+		
+		grains[0] = Synth(\grains, [\buf, boomwhackerCBuf, \out, delayBusses[8], \durRate, 0.2]);
+		grains[1] = Synth(\grains, [\buf, plasticBellShortBuf, \out, delayBusses[9], \durRate, 0.21]);
+		grains[2] = Synth(\grains, [\buf, wahTubeSharpBuf, \out, delayBusses[10], \durRate, 0.23]);
 
 		Ndef(\mixer, {
-			var ins, sum;
+			var ins, sum, sumAmp;
 
 			ins = (3 * modulator_count).collect { |i|
 				In.ar((\in ++ i).asSymbol.kr(0), 2);
 			};
 			
 			sum = ins.collect { |sig, i|
-				sig * Lag3.kr((\gain_++i).asSymbol.kr(0), 0.5)
+			  var out = sig * Lag3.kr((\gain_++i).asSymbol.kr(0), 2.5);
+			  Out.kr((\levelOut++i).asSymbol.kr(18), Amplitude.kr(in: out));
+			  out
 			}.sum;
+			
+			sum = sum * Lag3.kr(\masterGain.kr(0), 2.5);
+			
+			Out.kr(\levelOutL.kr(16), Amplitude.kr(in: sum[0]));
+			Out.kr(\levelOutR.kr(17), Amplitude.kr(in: sum[1]));
 
 			Out.ar(0, sum);
 		});
 
 		(3 * modulator_count).do { |idx|
 			Ndef(\mixer).set(( \in++idx ).asSymbol, mixerInBusses[idx]);
+			Ndef(\mixer).set((\levelOut++idx).asSymbol, ampBusses[idx + 2]);
 		};
+		
+		Ndef(\mixer).set(\levelOutL, ampBusses[0]);
+		Ndef(\mixer).set(\levelOutR, ampBusses[1]);
 		
 		Ndef(\mixer).play;
 
@@ -247,6 +275,12 @@ Bifurcation {
 		var amp = db.dbamp;
 
 		Ndef(\mixer).set((\gain_++channel).asSymbol, amp);
+	}
+	
+	adjustMasterVolume { |db|
+	  var amp = db.dbamp;
+	  
+	  Ndef(\mixer).set(\masterGain, amp);
 	}
 
 	adjustSyncSawEnvelope { |atk, rel|
@@ -274,6 +308,14 @@ Bifurcation {
 	setPWMInterval { |channel, interval|
 		modulatedPulses[channel].set(\interval, interval);
 	}
+	
+	setGrainRate { |channel, rate|
+		grains[channel].set(\rate, rate);
+	}
+	
+	setGrainDuration { |channel, dur|
+		grains[channel].set(\dur, dur);
+	}
 
 	adjustRDev { |channel, amount|
 		logisticModulators[channel].set(\r_dev, amount);
@@ -281,6 +323,7 @@ Bifurcation {
 
 	adjustModulatorFreq { |channel, freq|
 		logisticModulators[channel].set(\freq, freq);
+		grains[channel].set(\tRate, freq.linlin(3, 40, 0.2, 50));
 	}
 
 	triggerDelay { |channel, gate|
@@ -296,5 +339,15 @@ Bifurcation {
 		// IMPORTANT
 		voiceGroup.free;
 		logisticGroup.free;
+		pulsesGroup.free;
+		grainsGroup.free;
+		
+		logisticOutBusses.do { |bus| bus.free; };
+		lagBusses.do { |bus| bus.free; };
+		deltaBusses.do { |bus| bus.free; };
+		integratedDeltaBusses.do { |bus| bus.free; };
+		delayBusses.do { |bus| bus.free; };
+		mixerInBusses.do { |bus| bus.free; };
+		ampBusses.do { |bus| bus.free; };
 	}
 }

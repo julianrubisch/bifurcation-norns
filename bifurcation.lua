@@ -4,6 +4,10 @@
 
 engine.name = 'BIFURCATION'
 
+g = grid.connect()
+m = midi.connect(1)
+monolit = midi.connect(3)
+
 bifurcation_setup = include 'lib/bifurcation'
 Fader = include 'lib/fader'
 Crossfader = include 'lib/crossfader'
@@ -14,10 +18,10 @@ local Graph = require 'graph'
 local FilterGraph = require 'filtergraph'
 local Formatters = require 'formatters'
 
-local tabs = UI.Tabs.new(1, {"Mixer", "Logistic", "SyncSaw", "PWM"})
+local tabs = UI.Tabs.new(1, {"Mixer", "Log", "SyncSaw", "PWM", "Grain"})
 local dials
 
-local tabLeds = {{1,1}, {2,1}, {3,1}, {4,1}}
+local tabLeds = {{1,1}, {2,1}, {3,1}, {4,1}, {5,1}}
 local psetLeds = {{9,1}, {10,1}, {11,1}, {12,1}, {13,1}, {14,1}, {15,1}, {16,1}}
 local activePset = 0
 
@@ -28,15 +32,19 @@ local modulatorFreqCrossfaders = {}
 local rDevCrossfaders = {}
 local pwmBaseFreqFaders = {}
 local pwmIntervalFaders = {}
+local grainRateFaders = {}
+local grainDurationFaders = {}
 
 local momentaryKeys = {}
 
-g = grid.connect()
-m = midi.connect(1)
+local screen_dirty = false
+local grid_dirty = false
 
 for i = 1, 12 do
    mixer["channel_"..i.."_amp"] = Fader.new(i, g, 5, 1)
 end
+
+local masterVolumeFader = Fader.new(16, g, 5, 1)
 
 for i = 1, 4 do
    klankDecayFaders["syncSaw_"..i.."_klank_decay_lower"] = Fader.new(i, g, 6, 1)
@@ -48,6 +56,8 @@ for i = 1, 4 do
    pwmBaseFreqFaders["pwm_"..i.."_base_freq"] = Fader.new(i, g, 5, 1)
    pwmIntervalFaders["pwm_"..i.."_interval"] = Fader.new(i + 5, g, 6, 1)
 
+   grainRateFaders["grain_"..i.."_rate"] = Crossfader.new(i, g, 7, 6)
+   grainDurationFaders["grain_"..i.."_dur"] = Crossfader.new(i, g, 6, 3, 8)
 end
 
 for x = 1,16 do -- for each x-column (16 on a 128-sized grid)...
@@ -57,12 +67,31 @@ for x = 1,16 do -- for each x-column (16 on a 128-sized grid)...
    end
 end
 
+monolit.event = function(data)
+  local d = midi.to_msg(data)
+  
+  if d.ch == 2 then
+    if d.type == "cc" then
+      if d.cc == 1 then
+        params:set("syncSaw_atk", util.linlin(0, 127, 0.01, 1, d.val))
+        dials["syncSaw_atk"]:set_value(params:get("syncSaw_atk"))
+      elseif d.cc == 2 then
+        params:set("pwm_env_atk", util.linlin(0, 127, 0.01, 1, d.val))
+        dials["pwm_env_atk"]:set_value(params:get("pwm_env_atk"))
+      elseif d.cc == 3 then
+        params:set("pwm_env_rel", util.linlin(0, 127, 0.01, 1, d.val))
+        dials["pwm_env_rel"]:set_value(params:get("pwm_env_rel"))
+      end
+    end
+  end
+end
+
 function init()
    bifurcation_setup.add_params()
    dials = {
-      syncSaw_atk = UI.Dial.new(60, 20, 18, params:get("syncSaw_atk"), 0.01, 1.0, 0.01, 0.01, {}, "s"),
-      pwm_env_atk = UI.Dial.new(30, 20, 18, params:get("pwm_env_atk"), 0.01, 1, 0.01, 0.01, {}, "s"),
-      pwm_env_rel = UI.Dial.new(80, 20, 18, params:get("pwm_env_rel"), 0.01, 1, 0.01, 0.01, {}, "s")
+      syncSaw_atk = UI.Dial.new(60, 16, 18, params:get("syncSaw_atk"), 0.01, 1.0, 0.01, 0.01, {}, "s"),
+      pwm_env_atk = UI.Dial.new(30, 16, 18, params:get("pwm_env_atk"), 0.01, 1, 0.01, 0.01, {}, "s"),
+      pwm_env_rel = UI.Dial.new(80, 16, 18, params:get("pwm_env_rel"), 0.01, 1, 0.01, 0.01, {}, "s")
    }
 
    params.action_read = function(filename, silent, number)
@@ -97,11 +126,78 @@ function init()
       for id, fader in pairs(pwmIntervalFaders) do
          fader:setValue(params:get(id))
       end
+      
+      for id, fader in pairs(grainRateFaders) do
+        fader:setValue(params:get(id))
+      end
+      
+      for id, fader in pairs(grainDurationFaders) do
+        fader:setValue(params:get(id))
+      end
 
-      redraw()
+      masterVolumeFader:setValue(params:get("master_volume"))
+
+      screen_dirty = true
    end
 
-   redraw()
+   screen_dirty = true
+   grid_dirty = true
+   
+   last_cpu_peak = 0
+   last_cpu_avg = 0
+   last_amp_out_l = 0
+   last_amp_out_r = 0
+
+   cpu_peak_tracker = poll.set("cpu_peak")
+   cpu_peak_tracker.callback = function(x)
+     if x > 0 then
+        last_cpu_peak = x
+        screen_dirty = true
+     end
+   end
+   
+   cpu_avg_tracker = poll.set("cpu_avg")
+   cpu_avg_tracker.callback = function(x)
+     if x > 0 then
+        last_cpu_avg = x
+        screen_dirty = true
+     end
+   end
+   
+   amp_out_l_tracker = poll.set("outputAmpL")
+   amp_out_l_tracker.callback = function(x)
+        last_amp_out_l = x
+        screen_dirty = true
+   end
+   
+   amp_out_r_tracker = poll.set("outputAmpR")
+   amp_out_r_tracker.callback = function(x)
+        last_amp_out_r = x
+        screen_dirty = true
+   end
+   
+   screen_timer = clock.run(
+    function()
+      while true do
+        clock.sleep(1/15)
+        
+        cpu_peak_tracker:update()
+        cpu_avg_tracker:update()
+        amp_out_l_tracker:update()
+        amp_out_r_tracker:update()
+        
+        if screen_dirty then
+          redraw()
+          screen_dirty = false
+        end
+        
+        if grid_dirty then
+          grid_redraw()
+          grid_dirty = false
+        end
+      end
+    end
+   )
 end
 
 function key(n, z)
@@ -114,6 +210,7 @@ end
 function enc(n, d)
    if n == 1 then
       tabs:set_index_delta(d, false)
+      grid_dirty = true
    elseif n == 2 then
       --   if tabs.index == 1 then
       --     cluster_size = util.clamp(cluster_size + d, 1, 10)
@@ -129,9 +226,6 @@ function enc(n, d)
          dials["pwm_env_atk"]:set_value(params:get("pwm_env_atk"))
       end
    elseif n == 3 then
-            --   if tabs.index == 1 then
-            --     cluster_width = util.clamp(cluster_width + d, 1, 6)
-            --     dials["cluster_width"]:set_value(cluster_width)
         if tabs.index == 2 then
            params:delta("dip_rel", d / 2)
            dials["dip_rel"]:set_value(params:get("dip_rel"))
@@ -164,7 +258,7 @@ function enc(n, d)
         end
    end
 
-   redraw()
+   screen_dirty = true
 end
 
 -- register tab keys
@@ -180,7 +274,7 @@ function g.key(x, y, z)
       end
    end
 
-   -- check if the pressed key is in the tabLeds range
+   -- check if the pressed key is in the presets range
    for idx, coord in ipairs(psetLeds) do
       if coord[1] == x and coord[2] == y then
          local pset = x - 8
@@ -203,7 +297,16 @@ function g.key(x, y, z)
             end
          end
       end
-      -- logistic
+      
+      for idx, coords in ipairs(masterVolumeFader:getCoords()) do
+         if coords[1] == x and coords[2] == y then
+            masterVolumeFader:setValue(9 - coords[2])
+            params:set("master_volume", 9 - coords[2])
+               
+            break
+         end
+      end
+   -- logistic
    elseif tabs.index == 2 then
       for id, crossfader in pairs(rDevCrossfaders) do
          for idx, coords in ipairs(crossfader:getCoords()) do
@@ -270,9 +373,33 @@ function g.key(x, y, z)
             end
          end
       end
+     -- grain
+   elseif tabs.index == 5 then
+      for id, crossfader in pairs(grainRateFaders) do
+         for idx, coords in ipairs(crossfader:getCoords()) do
+            if coords[1] == x and coords[2] == y then
+               crossfader:setValue(coords[1])
+               params:set(id, coords[1])
+               
+               break
+            end
+         end
+      end
+
+      for id, crossfader in pairs(grainDurationFaders) do
+         for idx, coords in ipairs(crossfader:getCoords()) do
+            if coords[1] == x and coords[2] == y then
+               crossfader:setValue(coords[1] - 8)
+               params:set(id, coords[1] - 8)
+               
+               break
+            end
+         end
+      end
    end
 
-   redraw()
+   screen_dirty = true
+   grid_dirty = true
 end
 
 
@@ -283,43 +410,37 @@ function redraw()
    
    -- mixer
    if tabs.index == 1 then
-      -- dials["cluster_size"]:redraw()
-      -- dials["cluster_width"]:redraw()
-      -- screen.move(19, 24)
-      -- screen.text_center(cluster_size)
-      -- screen.move(19, 52)
-      -- screen.text_center(cluster_width)
+
       -- logistic
    elseif tabs.index == 2 then
       -- mod
    elseif tabs.index == 3 then
       dials["syncSaw_atk"]:redraw()
-      screen.move(69, 60)
+      screen.move(69, 50)
       screen.text_center("SyncSaw Attack")
-      -- elseif tabs.index == 4 then
-      --   dials["filter_freq"]:redraw()
-      --   dials["filter_q"]:redraw()
-      --   screen.move(64, 24)
-      --   screen.text_center(Formatters.format_freq_raw(params:get("all_filterFreq")))
-      --   screen.move(19, 52)
-      --   screen.text_center(params:get("all_filterQ"))
-      -- -- trig
-      -- elseif tabs.index == 5 then
-      --   trig_mode_list:redraw()
-      --   dials["transposition"]:redraw()
-      --   screen.move(19, 52)
-      --   screen.text_center(transposition)
    elseif tabs.index == 4 then
       dials["pwm_env_atk"]:redraw()
       dials["pwm_env_rel"]:redraw()
-      screen.move(39, 60)
+      screen.move(39, 50)
       screen.text_center("PWM Atk")
-      screen.move(89, 60)
+      screen.move(89, 50)
       screen.text_center("PWM Rel")
    end
+   
+   -- draw cpu
+   screen.move(0,60)
+   screen.text("cpu "..util.round(last_cpu_avg).."("..util.round(last_cpu_peak)..")")
+   
+   -- draw amplitudes
+   screen.move(64, 60)
+   screen.text("L"..string.format("%.2f",last_amp_out_l))
+   screen.move(96, 60)
+   screen.text("R"..string.format("%.2f",last_amp_out_l))
+   
    screen.update()
+end
 
-   -- grid redraw
+function grid_redraw()
    g:all(0)
    
    -- GLOBAL KEYS
@@ -338,20 +459,7 @@ function redraw()
    -- end
 
    -- send program changes to microcosm
-   -- TODO cleanup: move execution of actions up, only redrawing here
-   g:led(16, 2, momentaryKeys[16][2] * 15)
-   if momentaryKeys[16][2] == 1 then
-      -- Interrupt A
-      print("trigger Interrupt A")
-      m:program_change(5, 1)
-   end
-
-   g:led(16, 3, momentaryKeys[16][3] * 15)
-   if momentaryKeys[16][3] == 1 then
-      -- Interrupt D
-      print("trigger Interrupt D")
-      m:program_change(8, 1)
-   end
+   
    
    -- trigger delay envelope
    for i = 1,12 do
@@ -363,6 +471,8 @@ function redraw()
       for id, fader in pairs(mixer) do
          fader:draw()
       end
+      
+      masterVolumeFader:draw()
    elseif tabs.index == 2 then
       for id, crossfader in pairs(rDevCrossfaders) do
          crossfader:draw()
@@ -386,6 +496,14 @@ function redraw()
 
       for id, fader in pairs(pwmIntervalFaders) do
          fader:draw()
+      end
+   elseif tabs.index == 5 then
+      for id, crossfader in pairs(grainRateFaders) do
+         crossfader:draw()
+      end
+
+      for id, crossfader in pairs(grainDurationFaders) do
+         crossfader:draw()
       end
    end
    
