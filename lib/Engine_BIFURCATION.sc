@@ -91,6 +91,13 @@ Engine_BIFURCATION : CroneEngine {
 			kernel.setGrainDuration(channel, dur);
 		});
 
+		this.addCommand(\setGrainScanRate, "if", { |msg|
+		  var channel = msg[1].asInteger - 1;
+			var rate = msg[2].asFloat;
+
+			kernel.setGrainScanRate(channel, rate);
+		});
+
 		this.addCommand(\triggerDelay, "ii", { |msg|
 			var channel = msg[1].asInteger - 1;
 			var gate = msg[2].asInteger;

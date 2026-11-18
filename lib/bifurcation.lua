@@ -22,7 +22,8 @@ function BIFURCATION.add_params()
   local pwmIntervals = {1.111, 1.2, 1.25, 1.333, 1.5, 1.75}
   local grainRates = {-1.0, -0.5, -0.2, 0.2, 0.5, 1.0, 2.0}
   local grainDurations = {0.05, 0.1, 0.2, 0.5, 1.0, 2.0}
-  -- local grainCenterPos
+  local grainScanLabels = {"off", "0.05 Hz", "0.2 Hz", "0.5 Hz", "1 Hz", "2 Hz"}
+  local grainScanRates = {0, 0.05, 0.2, 0.5, 1, 2}
 
   params:add_separator("Mixer")
   for i = 1,#channels do
@@ -169,6 +170,13 @@ function BIFURCATION.add_params()
                        function(idx)
                           local dur = grainDurations[idx]
                           engine.setGrainDuration(i, dur)
+                       end
+     )
+
+     params:add_option("grain_"..grainVoices[i].."_scan", "Grain ["..grainVoices[i].."] scan", grainScanLabels, 1)
+     params:set_action("grain_"..grainVoices[i].."_scan",
+                       function(idx)
+                          engine.setGrainScanRate(i, grainScanRates[idx])
                        end
      )
   end

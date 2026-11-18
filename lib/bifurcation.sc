@@ -90,14 +90,19 @@ Bifurcation {
 				}).add;
 				
 				SynthDef.new(\grains, {
-				  var sig;
-				  
+				  var sig, scanRate, pos;
+
+				  // scanRate 0 keeps grains at the buffer start, which suits one-shot samples;
+				  // longer field recordings need the position to wander through the file
+				  scanRate = \scanRate.kr(0);
+				  pos = LFNoise1.kr(scanRate).range(0, BufDur.kr(\buf.kr(0))) * (scanRate > 0);
+
 				  sig = TGrains.ar(
             numChannels: 2,
             trigger: Dust.kr(\tRate.kr(40)),
             bufnum: \buf.kr(0),
             rate: \rate.kr(1),
-            // centerPos: \pos.kr(0.5), // in seconds (!)
+            centerPos: pos, // in seconds (!)
             dur: Lag.kr(\dur.kr(0.2), 1), // in secs
             //dur: LFSaw.kr(\durRate.kr(0.2), mul: 0.3, add: 0.4),
             //dur: In.kr(\dur.kr(0)),
@@ -177,9 +182,9 @@ Bifurcation {
 	init { |server, baseSamplePath|
 		var s = server;
 		
-		var boomwhackerCBuf = Buffer.read(s, baseSamplePath ++ "bifurcation_boomwhacker_C.wav");
-		var plasticBellShortBuf = Buffer.read(s, baseSamplePath ++ "bifurcation_plastic_bell_short.wav");
-		var wahTubeSharpBuf = Buffer.read(s, baseSamplePath ++ "bifurcation_wah_tube_sharp.wav");
+		var waterCaboGiraoBuf = Buffer.read(s, baseSamplePath ++ "bifurcation_water_cabo_girao.wav");
+		var waterBoilingBuf = Buffer.read(s, baseSamplePath ++ "bifurcation_water_boiling.wav");
+		var waterDrippingBuf = Buffer.read(s, baseSamplePath ++ "bifurcation_water_dripping.wav");
 
 		voiceGroup = Group.new(s);
 		logisticGroup = Group.new(s);
@@ -223,9 +228,9 @@ Bifurcation {
 			modulatedPulses[index] = Synth(\modulatedPulse, [\out, delayBusses[index + 4], \width, deltaBusses[index]]);
 		};
 		
-		grains[0] = Synth(\grains, [\buf, boomwhackerCBuf, \out, delayBusses[8], \durRate, 0.2]);
-		grains[1] = Synth(\grains, [\buf, plasticBellShortBuf, \out, delayBusses[9], \durRate, 0.21]);
-		grains[2] = Synth(\grains, [\buf, wahTubeSharpBuf, \out, delayBusses[10], \durRate, 0.23]);
+		grains[0] = Synth(\grains, [\buf, waterCaboGiraoBuf, \out, delayBusses[8], \durRate, 0.2]);
+		grains[1] = Synth(\grains, [\buf, waterBoilingBuf, \out, delayBusses[9], \durRate, 0.21]);
+		grains[2] = Synth(\grains, [\buf, waterDrippingBuf, \out, delayBusses[10], \durRate, 0.23]);
 
 		Ndef(\mixer, {
 			var ins, sum, sumAmp;
@@ -315,6 +320,10 @@ Bifurcation {
 	
 	setGrainDuration { |channel, dur|
 		grains[channel].set(\dur, dur);
+	}
+
+	setGrainScanRate { |channel, rate|
+		grains[channel].set(\scanRate, rate);
 	}
 
 	adjustRDev { |channel, amount|
