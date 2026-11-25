@@ -5,18 +5,18 @@
 engine.name = 'BIFURCATION'
 
 g = grid.connect()
+-- the Microcosm and the Monolit; the port params pick both by name in add_params
 m = midi.connect(1)
-monolit = midi.connect(3)
+monolit = midi.connect(1)
 
 bifurcation_setup = include 'lib/bifurcation'
 Fader = include 'lib/fader'
 Crossfader = include 'lib/crossfader'
+local GrainArc = include 'lib/grain_arc'
+local EnvFollower = include 'lib/env_follower'
+local MicrocosmCC = include 'lib/microcosm_cc'
 
-local MusicUtil = require 'musicutil'
 local UI = require 'ui'
-local Graph = require 'graph'
-local FilterGraph = require 'filtergraph'
-local Formatters = require 'formatters'
 
 local tabs = UI.Tabs.new(1, {"Mixer", "Log", "SyncSaw", "PWM", "Grain"})
 local dials
@@ -38,13 +38,51 @@ local grainDurationFaders = {}
 local momentaryKeys = {}
 
 local screen_dirty = false
-local grid_dirty = false
 
 for i = 1, 12 do
    mixer["channel_"..i.."_amp"] = Fader.new(i, g, 5, 1)
 end
 
 local masterVolumeFader = Fader.new(16, g, 5, 1)
+
+-- the five mixer keys (off + four steps) map onto the six level options, so psets keep their
+-- meaning: off, -24, -12, -6, 0 dB; -36 is menu-only and shows as off
+local MIXER_KEY_OPTIONS = {1, 3, 4, 5, 6}
+
+local function mixer_key_height(option)
+   local height = 1
+   for h, o in ipairs(MIXER_KEY_OPTIONS) do
+      if o <= option then height = h end
+   end
+   return height
+end
+
+-- A pset from the grid leaves the master alone and starts every channel at off, its saved
+-- level lit as a target on the fader, so the piece is played up towards it instead of jumping in.
+function read_pset_as_score(n)
+   local master = params:get("master_volume")
+   local ids = { "master_volume" }
+   for id in pairs(mixer) do table.insert(ids, id) end
+   local actions = {}
+   for _, id in ipairs(ids) do
+      local p = params:lookup_param(id)
+      actions[id] = p.action
+      p.action = function() end
+   end
+   params:read(n)
+   for _, id in ipairs(ids) do params:lookup_param(id).action = actions[id] end
+
+   -- the read left master at the slot's value with its action muted; the engine never moved
+   params:set("master_volume", master, true)
+   masterVolumeFader:setValue(mixer_key_height(master))
+   for id, fader in pairs(mixer) do
+      fader:setTarget(mixer_key_height(params:get(id)))
+      fader:setValue(1)
+      params:set(id, 1, true)
+      -- the silent set skips the action, and the engine still plays the previous pset's level
+      params:lookup_param(id):bang()
+   end
+end
 
 for i = 1, 4 do
    klankDecayFaders["syncSaw_"..i.."_klank_decay_lower"] = Fader.new(i, g, 6, 1)
@@ -67,27 +105,14 @@ for x = 1,16 do -- for each x-column (16 on a 128-sized grid)...
    end
 end
 
-monolit.event = function(data)
-  local d = midi.to_msg(data)
-  
-  if d.ch == 2 then
-    if d.type == "cc" then
-      if d.cc == 1 then
-        params:set("syncSaw_atk", util.linlin(0, 127, 0.01, 1, d.val))
-        dials["syncSaw_atk"]:set_value(params:get("syncSaw_atk"))
-      elseif d.cc == 2 then
-        params:set("pwm_env_atk", util.linlin(0, 127, 0.01, 1, d.val))
-        dials["pwm_env_atk"]:set_value(params:get("pwm_env_atk"))
-      elseif d.cc == 3 then
-        params:set("pwm_env_rel", util.linlin(0, 127, 0.01, 1, d.val))
-        dials["pwm_env_rel"]:set_value(params:get("pwm_env_rel"))
-      end
-    end
-  end
-end
-
 function init()
    bifurcation_setup.add_params()
+   EnvFollower.add_params()
+   MicrocosmCC.add_params()
+   GrainArc.init()
+   EnvFollower.init()
+   MicrocosmCC.init(EnvFollower)
+   masterVolumeFader:setValue(mixer_key_height(params:get("master_volume")))
    dials = {
       syncSaw_atk = UI.Dial.new(60, 16, 18, params:get("syncSaw_atk"), 0.01, 1.0, 0.01, 0.01, {}, "s"),
       pwm_env_atk = UI.Dial.new(30, 16, 18, params:get("pwm_env_atk"), 0.01, 1, 0.01, 0.01, {}, "s"),
@@ -100,7 +125,7 @@ function init()
       end
 
       for id, fader in pairs(mixer) do
-         fader:setValue(params:get(id))
+         fader:setValue(mixer_key_height(params:get(id)))
       end
 
       for id, fader in pairs(klankDecayFaders) do
@@ -135,13 +160,14 @@ function init()
         fader:setValue(params:get(id))
       end
 
-      masterVolumeFader:setValue(params:get("master_volume"))
+      masterVolumeFader:setValue(mixer_key_height(params:get("master_volume")))
+
+      MicrocosmCC.recall(filename)
 
       screen_dirty = true
    end
 
    screen_dirty = true
-   grid_dirty = true
    
    last_cpu_peak = 0
    last_cpu_avg = 0
@@ -191,34 +217,18 @@ function init()
           screen_dirty = false
         end
         
-        if grid_dirty then
-          grid_redraw()
-          grid_dirty = false
-        end
+        -- every frame, not on change: a grid replugged after a static hit comes back by itself
+        grid_redraw()
       end
     end
    )
 end
 
-function key(n, z)
-   if n == 2 then
-   elseif n == 3 then
-      -- engine.free_all_notes()
-   end
-end
-
 function enc(n, d)
    if n == 1 then
       tabs:set_index_delta(d, false)
-      grid_dirty = true
    elseif n == 2 then
-      --   if tabs.index == 1 then
-      --     cluster_size = util.clamp(cluster_size + d, 1, 10)
-      --     dials["cluster_size"]:set_value(cluster_size)
-      if tabs.index == 2 then
-         params:delta("dip_atk", d / 2)
-         dials["dip_atk"]:set_value(params:get("dip_atk"))
-      elseif tabs.index == 3 then
+      if tabs.index == 3 then
          params:delta("syncSaw_atk", d / 2)
          dials["syncSaw_atk"]:set_value(params:get("syncSaw_atk"))
       elseif tabs.index == 4 then
@@ -226,36 +236,10 @@ function enc(n, d)
          dials["pwm_env_atk"]:set_value(params:get("pwm_env_atk"))
       end
    elseif n == 3 then
-        if tabs.index == 2 then
-           params:delta("dip_rel", d / 2)
-           dials["dip_rel"]:set_value(params:get("dip_rel"))
-        
-            --     spread = util.clamp(spread + d / 20, 0, 1)
-            --     dials["spread"]:set_value(spread)
-
-            --     for i=1,cluster_size do
-            --       voice_pan = util.linlin(1, cluster_size, -1. * spread, 1. * spread, i)
-            --       params:set(i .. "_pan", voice_pan)
-            --     end
-            --   elseif tabs.index == 3 then
-            --     pan_mod = util.clamp(pan_mod + d / 10, 0., 1.)
-            --     dials["pan_mod"]:set_value(pan_mod)
-            
-            --     pan_amp_range = params:get_range("all_panAmp")
-            --     pan_freq_range = params:get_range("all_panFreq")
-            --     params:set("all_panAmp", util.linlin(0., 1., pan_amp_range[1], pan_amp_range[2], pan_mod))
-            --     params:set("all_panFreq", util.linlin(0., 1., pan_freq_range[1], pan_freq_range[2], pan_mod))
-            --   elseif tabs.index == 4 then
-            --     params:delta("all_filterQ", d)
-            --     dials["filter_q"]:set_value(params:get("all_filterQ"))
-            --     filter_graph:edit("lowpass", 12, params:get("all_filterFreq"), params:get("all_filterQ")/20)
-            --   elseif tabs.index == 5 then
-            --     transposition = util.clamp(transposition + d, -24, 24)
-            --     dials["transposition"]:set_value(transposition)
-        elseif tabs.index == 4 then
-           params:delta("pwm_env_rel", d / 2)
-           dials["pwm_env_rel"]:set_value(params:get("pwm_env_rel"))
-        end
+      if tabs.index == 4 then
+         params:delta("pwm_env_rel", d / 2)
+         dials["pwm_env_rel"]:set_value(params:get("pwm_env_rel"))
+      end
    end
 
    screen_dirty = true
@@ -264,6 +248,7 @@ end
 -- register tab keys
 function g.key(x, y, z)
    momentaryKeys[x][y] = z
+   if y == 2 and x <= 12 then engine.triggerDelay(x, z) end
    
    -- check if the pressed key is in the tabLeds range
    for idx, coord in ipairs(tabLeds) do
@@ -276,9 +261,10 @@ function g.key(x, y, z)
 
    -- check if the pressed key is in the presets range
    for idx, coord in ipairs(psetLeds) do
-      if coord[1] == x and coord[2] == y then
+      -- on press only; the release would read the pset a second time
+      if coord[1] == x and coord[2] == y and z == 1 then
          local pset = x - 8
-         params:read(pset)
+         read_pset_as_score(pset)
          activePset = pset
 
          break
@@ -291,17 +277,17 @@ function g.key(x, y, z)
          for idx, coords in ipairs(fader:getCoords()) do
             if coords[1] == x and coords[2] == y then
                fader:setValue(9 - coords[2])
-               params:set(id, 9 - coords[2])
-               
+               params:set(id, MIXER_KEY_OPTIONS[9 - coords[2]])
+
                break
             end
          end
       end
-      
+
       for idx, coords in ipairs(masterVolumeFader:getCoords()) do
          if coords[1] == x and coords[2] == y then
             masterVolumeFader:setValue(9 - coords[2])
-            params:set("master_volume", 9 - coords[2])
+            params:set("master_volume", MIXER_KEY_OPTIONS[9 - coords[2]])
                
             break
          end
@@ -399,7 +385,6 @@ function g.key(x, y, z)
    end
 
    screen_dirty = true
-   grid_dirty = true
 end
 
 
@@ -427,17 +412,59 @@ function redraw()
       screen.text_center("PWM Rel")
    end
    
-   -- draw cpu
-   screen.move(0,60)
-   screen.text("cpu "..util.round(last_cpu_avg).."("..util.round(last_cpu_peak)..")")
-   
-   -- draw amplitudes
-   screen.move(64, 60)
-   screen.text("L"..string.format("%.2f",last_amp_out_l))
-   screen.move(96, 60)
-   screen.text("R"..string.format("%.2f",last_amp_out_l))
-   
+   draw_status_line()
+
    screen.update()
+end
+
+-- status line geometry (bottom 8 px), matching susurrus; L over R
+local STATUS_RULE_Y = 55.5
+local STATUS_TEXT_Y = 63
+local METER_X, METER_W, METER_H = 20, 30, 2
+local METER_Y = { 57, 60 }
+local FLOOR_DB = -60
+
+-- amps are linear; a linear width would leave a healthy -20 dBFS signal at 10% of the bar
+local function meter_frac(amp)
+   if amp <= 0 then return 0 end
+   return util.clamp(util.linlin(FLOOR_DB, 0, 0, 1, 20 * math.log(amp, 10)), 0, 1)
+end
+
+function draw_status_line()
+   screen.level(1)
+   screen.move(0, STATUS_RULE_Y)
+   screen.line(128, STATUS_RULE_Y)
+   screen.stroke()
+
+   screen.level(3)
+   screen.move(0, STATUS_TEXT_Y)
+   screen.text("out")
+
+   for i, amp in ipairs({ last_amp_out_l, last_amp_out_r }) do
+      local y = METER_Y[i]
+      screen.level(2)
+      screen.rect(METER_X + 0.5, y + 0.5, METER_W, METER_H)
+      screen.stroke()
+
+      local frac = meter_frac(amp)
+      if frac > 0 then
+         screen.level(15)
+         screen.rect(METER_X + 0.5, y + 0.5, math.max(1, frac * METER_W), METER_H)
+         screen.fill()
+      end
+
+      -- clip pip: a dB bar is already mostly full for a healthy signal, so clipping needs its own mark
+      if amp >= 0.99 then
+         screen.level(15)
+         screen.rect(METER_X + METER_W + 2, y + 0.5, 1, METER_H)
+         screen.fill()
+      end
+   end
+
+   screen.level(3)
+   screen.move(128, STATUS_TEXT_Y)
+   -- %.0f, not %d: the cpu polls are floats and lua 5.3's %d rejects non-integers
+   screen.text_right(string.format("cpu %.0f%% pk %.0f%%", last_cpu_avg, last_cpu_peak))
 end
 
 function grid_redraw()
@@ -452,19 +479,9 @@ function grid_redraw()
       g:led(psetLeds[activePset][1], psetLeds[activePset][2], 15)
    end 
    
-   -- dip modulator frequency
-   -- for i=13,16 do
-   --    g:led(i, 8, momentaryKeys[i][8] * 15)
-   --    engine.dipModulatorFrequency(i-12, momentaryKeys[i][8])
-   -- end
-
-   -- send program changes to microcosm
-   
-   
    -- trigger delay envelope
    for i = 1,12 do
       g:led(i, 2, momentaryKeys[i][2] * 15)
-      engine.triggerDelay(i, momentaryKeys[i][2])
    end
 
    if tabs.index == 1 then

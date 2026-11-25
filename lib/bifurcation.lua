@@ -1,6 +1,5 @@
 local BIFURCATION = {}
 local ControlSpec = require 'controlspec'
-local Formatters = require 'formatters'
 
 function round_form(param,quant,form)
   return(util.round(param,quant)..form)
@@ -14,7 +13,7 @@ function BIFURCATION.add_params()
   local pwmVoices = {1,2,3,4}
   local modulators = {1,2,3,4}
   local grainVoices = {1,2,3,4}
-  local modulatorFrequencies = {3.55, 5.33, 8, 12, 18, 27, 40.5}
+  local modulatorFrequencies = {0.25, 1, 2, 4, 8, 16, 32}
   local klankDecayLowerLimits = {0.0000001, 0.000001, 0.0001, 0.001, 0.01, 0.1}
   local klankGains = {0, 0.01, 0.1, 0.5, 0.8, 0.9}
   local rDevs = {-0.05, -0.02, 0, 0.02, 0.05}
@@ -22,8 +21,6 @@ function BIFURCATION.add_params()
   local pwmIntervals = {1.111, 1.2, 1.25, 1.333, 1.5, 1.75}
   local grainRates = {-1.0, -0.5, -0.2, 0.2, 0.5, 1.0, 2.0}
   local grainDurations = {0.05, 0.1, 0.2, 0.5, 1.0, 2.0}
-  local grainScanLabels = {"off", "0.05 Hz", "0.2 Hz", "0.5 Hz", "1 Hz", "2 Hz"}
-  local grainScanRates = {0, 0.05, 0.2, 0.5, 1, 2}
 
   params:add_separator("Mixer")
   for i = 1,#channels do
@@ -38,7 +35,8 @@ function BIFURCATION.add_params()
     )
   end
   
-  params:add_option("master_volume", "Master Volume", levels, 1)
+  -- open from the start: grid psets leave the master alone, the channels set the level
+  params:add_option("master_volume", "Master Volume", levels, #levels)
   params:set_action("master_volume",
     function(idx)
       local db = levels[idx]
@@ -51,7 +49,7 @@ function BIFURCATION.add_params()
   for i = 1,#modulators do
      -- params:add_group("channel_["..channels[i].."]", "channel ["..channels[i].."]", #channels)
 
-    params:add_option("modulator_"..modulators[i].."_freq", "modulator ["..modulators[i].."] frequency", modulatorFrequencies, 3)
+    params:add_option("modulator_"..modulators[i].."_freq", "modulator ["..modulators[i].."] frequency", modulatorFrequencies, 5)
     params:set_action("modulator_"..modulators[i].."_freq", 
       function(idx)
         local freq = modulatorFrequencies[idx]
@@ -173,23 +171,68 @@ function BIFURCATION.add_params()
                        end
      )
 
-     params:add_option("grain_"..grainVoices[i].."_scan", "Grain ["..grainVoices[i].."] scan", grainScanLabels, 1)
-     params:set_action("grain_"..grainVoices[i].."_scan",
-                       function(idx)
-                          engine.setGrainScanRate(i, grainScanRates[idx])
+     -- random offset of each new grain around the center, in seconds like the grain duration;
+     -- the arc sets it with shift + ring
+     params:add_control(
+        "grain_"..grainVoices[i].."_spray",
+        "Grain ["..grainVoices[i].."] spray",
+        ControlSpec.new(0, 5, 'lin', 0, 0, "s"),
+        function(param) return "± "..util.round(param:get(), 0.01).." s" end
+     )
+     params:set_action("grain_"..grainVoices[i].."_spray",
+                       function(seconds)
+                          engine.setGrainSpray(i, seconds)
+                       end
+     )
+
+     -- the arc's ring i drives this; step 0 so slow turns aren't quantised away
+     params:add_control(
+        "grain_"..grainVoices[i].."_pos",
+        "Grain ["..grainVoices[i].."] pos",
+        ControlSpec.new(0, 1, 'lin', 0, 0),
+        function(param) return util.round(param:get() * 100, 1).." %" end
+     )
+     params:set_action("grain_"..grainVoices[i].."_pos",
+                       function(pos)
+                          engine.setGrainPos(i, pos)
                        end
      )
   end
   
   params:add_separator("MIDI")
-  params:add_number("midi_channel", "MIDI channel", 1, 16, 1) 
+  -- The Microcosm sits on the MIDIMATE's first out, where the passthrough mod also forwards the
+  -- Monolit's sliders. The Monolit gets only what its slider displays should show (EXT CC);
+  -- relaying through it relied on the Monolit echoing input, which a reset can switch off.
+  -- Both are picked by name because norns hands out port numbers in plug-in order.
+  local port_names = {}
+  local function port_named(pattern)
+    for i = 1, #midi.vports do
+      if (midi.vports[i].name or ""):match(pattern) then return i end
+    end
+    return 1
+  end
+  for i = 1, #midi.vports do port_names[i] = i..": "..(midi.vports[i].name or "none") end
+  params:add_option("midi_port", "Microcosm port", port_names, port_named("MIDIMATE eX 1"))
+  params:set_action("midi_port", function(i) m = midi.connect(i) end)
+  params:add_option("monolit_port", "Monolit port", port_names, port_named("Monolit"))
+  params:set_action("monolit_port", function(i) monolit = midi.connect(i) end)
+  -- a port number saved in a pset would bring the plug-in-order problem back on load
+  params:set_save("midi_port", false)
+  params:set_save("monolit_port", false)
+  params:add_number("midi_channel", "MIDI channel", 1, 16, 1)
   
+  -- the startup bang must not send: it would switch the Microcosm to program 0 mid-sound on
+  -- every script load. Pset loads and menu changes still send.
+  local sending_program_changes = false
   params:add_number("midi_program_change", "MIDI PC", 0, 127, 0)
   params:set_action("midi_program_change", function(pc)
-      m:program_change(pc, params:get("midi_channel"))
+      if sending_program_changes then
+        m:program_change(pc, params:get("midi_channel"))
+      end
     end)
-  
+
   params:bang()
+  sending_program_changes = true
 end
 
 return BIFURCATION

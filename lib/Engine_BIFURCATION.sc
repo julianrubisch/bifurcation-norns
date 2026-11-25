@@ -91,11 +91,12 @@ Engine_BIFURCATION : CroneEngine {
 			kernel.setGrainDuration(channel, dur);
 		});
 
-		this.addCommand(\setGrainScanRate, "if", { |msg|
-		  var channel = msg[1].asInteger - 1;
-			var rate = msg[2].asFloat;
+		this.addCommand(\setGrainSpray, "if", { |msg|
+			kernel.setGrainSpray(msg[1].asInteger - 1, msg[2].asFloat);
+		});
 
-			kernel.setGrainScanRate(channel, rate);
+		this.addCommand(\setGrainPos, "if", { |msg|
+			kernel.setGrainPos(msg[1].asInteger - 1, msg[2].asFloat);
 		});
 
 		this.addCommand(\triggerDelay, "ii", { |msg|
@@ -123,20 +124,27 @@ Engine_BIFURCATION : CroneEngine {
         amp
       });
     };
+
+    // master envelope in dB, for the Microcosm filter follower
+    this.addPoll(\envLevel, { kernel.envBus.getSynchronous });
+
+    this.addCommand(\envAttack, "f", { |msg| kernel.setEnvFollower(\envAtk, msg[1].asFloat) });
+    this.addCommand(\envRelease, "f", { |msg| kernel.setEnvFollower(\envRel, msg[1].asFloat) });
+
+    // per grain voice: grainStart1 and grainSpray1 (fractions of the file), grainDur1 (s),
+    // grainRate1, grainFile1 (s), grainCount1 (grains fired so far)
+    kernel.grainInfoBusses.do { |bus, voice|
+      [\grainStart, \grainDur, \grainRate, \grainSpray, \grainFile, \grainCount].do { |name, k|
+        var sub = bus.subBus(k);
+        this.addPoll((name ++ (voice + 1)).asSymbol, { sub.getSynchronous });
+      };
+    };
 	}
 	// alloc
 
 	// IMPORTANT
 	free {
-		kernel.freeAllNotes;
-		
-		// TODO let's clean this up
 		Crone.server.freeAll;
 		kernel.free;
-		
-		//kernel.voiceGroup.free;
-		//kernel.logisticGroup.free;
-		//kernel.pulsesGroup.free;
-		//kernel.grainsGroup.free;
-	} // free
+	}
 } // CroneEngine
