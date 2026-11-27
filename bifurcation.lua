@@ -57,6 +57,10 @@ local function mixer_key_height(option)
    return height
 end
 
+-- Saved levels of the channels still sitting at off since a grid load, by param id. A save
+-- writes these instead of the off, so saving before playing up to the score keeps the score.
+local score_targets = {}
+
 -- A pset from the grid leaves the master alone and starts every channel at off, its saved
 -- level lit as a target on the fader, so the piece is played up towards it instead of jumping in.
 function read_pset_as_score(n)
@@ -75,8 +79,11 @@ function read_pset_as_score(n)
    -- the read left master at the slot's value with its action muted; the engine never moved
    params:set("master_volume", master, true)
    masterVolumeFader:setValue(mixer_key_height(master))
+   -- the read ran action_read, which cleared these
    for id, fader in pairs(mixer) do
-      fader:setTarget(mixer_key_height(params:get(id)))
+      local saved = params:get(id)
+      if saved > 1 then score_targets[id] = saved end
+      fader:setTarget(mixer_key_height(saved))
       fader:setValue(1)
       params:set(id, 1, true)
       -- the silent set skips the action, and the engine still plays the previous pset's level
@@ -120,6 +127,8 @@ function init()
    }
 
    params.action_read = function(filename, silent, number)
+      score_targets = {}
+
       for id, dial in pairs(dials) do
          dials[id]:set_value(params:get(id))
       end
@@ -165,6 +174,23 @@ function init()
       MicrocosmCC.recall(filename)
 
       screen_dirty = true
+   end
+
+   -- norns has already written the file. A channel moved from the menu counts as played too,
+   -- hence the check for off.
+   params.action_write = function(filename, name, number)
+      if next(score_targets) == nil then return end
+      local lines = {}
+      for line in io.lines(filename) do
+         local id = line:match('^"(channel_%d+_amp)": ')
+         if id and score_targets[id] and params:get(id) == 1 then
+            line = string.format('"%s": %d', id, score_targets[id])
+         end
+         table.insert(lines, line)
+      end
+      local f = io.open(filename, "w")
+      f:write(table.concat(lines, "\n") .. "\n")
+      f:close()
    end
 
    screen_dirty = true
@@ -276,6 +302,7 @@ function g.key(x, y, z)
       for id, fader in pairs(mixer) do
          for idx, coords in ipairs(fader:getCoords()) do
             if coords[1] == x and coords[2] == y then
+               score_targets[id] = nil
                fader:setValue(9 - coords[2])
                params:set(id, MIXER_KEY_OPTIONS[9 - coords[2]])
 
