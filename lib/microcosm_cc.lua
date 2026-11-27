@@ -5,11 +5,11 @@ local MicrocosmCC = {}
 
 local EnvFollower
 
--- Time is left out: its slider runs an LFO. Filter comes in on channel 16 and reaches the
--- Microcosm through the follower, which adds its envelope on top.
+-- Time is left out: its slider runs an LFO. Loop level too: the Microcosm's looper carries
+-- the segue between sections, so a pset load must not touch it. Filter comes in on channel 16
+-- and reaches the Microcosm through the follower, which adds its envelope on top.
 local CONTROLS = {
   { id = "mc_mix", name = "Mix", cc = 9 },
-  { id = "mc_loop_level", name = "Loop level", cc = 13 },
   { id = "mc_space", name = "Space", cc = 12 },
   { id = "mc_filter", name = "Filter", cc = 8, ch = 16 },
   { id = "mc_resonance", name = "Resonance", cc = 15 },
